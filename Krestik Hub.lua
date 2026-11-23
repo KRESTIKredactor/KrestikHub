@@ -1,15 +1,23 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
-local Workspace = game:GetService("Workspace")
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Lighting = game:GetService("Lighting")
-local ProximityPromptService = game:GetService("ProximityPromptService")
-local CollectionService = game:GetService("CollectionService")
+local _cloneref = (typeof(cloneref) == "function") and cloneref or function(obj) return obj end
+local function getSafeService(name)
+    return _cloneref(game:GetService(name))
+end
+
+local Players = getSafeService("Players")
+local RunService = getSafeService("RunService")
+local UserInputService = getSafeService("UserInputService")
+local TweenService = getSafeService("TweenService")
+local SoundService = getSafeService("SoundService")
+local Workspace = getSafeService("Workspace")
+local HttpService = getSafeService("HttpService")
+local TeleportService = getSafeService("TeleportService")
+local ReplicatedStorage = getSafeService("ReplicatedStorage")
+local Lighting = getSafeService("Lighting")
+local ProximityPromptService = getSafeService("ProximityPromptService")
+local CollectionService = getSafeService("CollectionService")
+local LogService = getSafeService("LogService")
+local ScriptContext = getSafeService("ScriptContext")
+local Stats = getSafeService("Stats")
 local LocalPlayer = Players.LocalPlayer
 
 local running = true
@@ -161,7 +169,10 @@ local Translations = {
         LangLabel = "Language",
         ActiveGameModeLabel = "Active Game Mode",
         AntiAfk = "Anti-AFK",
-        AntiCheatBypass = "Anti-Cheat Spoofer & Kick Guard",
+        AntiCheatBypass = "Roblox Anti-Cheat Bypass (Full Shield)",
+        ACShieldStatusLabel = "Roblox AC Shield: ACTIVE | Intercepted: ",
+        ACShieldOffLabel = "Roblox AC Shield: DISABLED",
+        ACReapplyBtn = "Refresh AC Bypass & Clean Hooks",
         MenuBind = "Menu Key",
         FpsBoost = "Ultra FPS Boost (Potato PC)",
         Discord = "Copy Discord Link",
@@ -294,7 +305,10 @@ local Translations = {
         LangLabel = "Язык интерфейса",
         ActiveGameModeLabel = "Активный режим игры",
         AntiAfk = "Защита от отключения (Anti-AFK)",
-        AntiCheatBypass = "Обход анти-читов и защита от Kick",
+        AntiCheatBypass = "Обход анти-чита Roblox (Полная защита)",
+        ACShieldStatusLabel = "Щит Roblox AC: АКТИВЕН | Перехвачено: ",
+        ACShieldOffLabel = "Щит Roblox AC: ОТКЛЮЧЕН",
+        ACReapplyBtn = "Обновить обход и очистить ловушки AC",
         MenuBind = "Клавиша консоли управления",
         FpsBoost = "Макс. FPS Boost (Для слабых ПК)",
         Discord = "Скопировать ссылку Discord",
@@ -530,22 +544,71 @@ end
 local targetCoords = {x = 0, y = 0, z = 0}
 local savedCoords = nil
 
-local HUB_TAG = "KRESTIK_HUB_INSTANCE_V09"
+local HiddenInstances = setmetatable({}, {__mode = "k"})
+local ACBlockedCount = 0
+
+local function markStealthInstance(inst)
+    if inst then
+        HiddenInstances[inst] = true
+    end
+    return inst
+end
+
+local function isStealthInstance(inst)
+    if not inst then return false end
+    if HiddenInstances[inst] then return true end
+    local p = inst.Parent
+    while p do
+        if HiddenInstances[p] then
+            HiddenInstances[inst] = true
+            return true
+        end
+        p = p.Parent
+    end
+    return false
+end
+
+local function protectStealthGui(guiObj)
+    markStealthInstance(guiObj)
+    pcall(function()
+        if syn and syn.protect_gui then
+            syn.protect_gui(guiObj)
+        elseif protect_gui then
+            protect_gui(guiObj)
+        elseif gethiddenui then
+            guiObj.Parent = gethiddenui()
+        end
+    end)
+end
+
+local function generateNativeStealthName(prefix)
+    return (prefix or "RobloxGui_") .. HttpService:GenerateGUID(false):gsub("-", ""):sub(1, 10)
+end
+
+-- Безопасная выгрузка предыдущей копии хаба через Lua-среду (без следов в DataModel)
+pcall(function()
+    local env = (getgenv and getgenv()) or _G
+    if env and type(env._KrestikHubCleanup) == "function" then
+        pcall(env._KrestikHubCleanup)
+    end
+end)
 
 local targetParent = nil
-local successParent = pcall(function() targetParent = (gethui and gethui()) or game:GetService("CoreGui") end)
+local successParent = pcall(function()
+    targetParent = (gethui and gethui()) or getSafeService("CoreGui")
+end)
 if not successParent or not targetParent then
     targetParent = LocalPlayer:WaitForChild("PlayerGui")
 end
 
 for _, child in ipairs(targetParent:GetChildren()) do
-    if child.Name == "KrestikHubV3_Final" or child.Name == "KrestikHub_UI" or child:GetAttribute("IsKrestikHub") or child:FindFirstChild(HUB_TAG) then
+    if child.Name == "KrestikHubV3_Final" or child.Name == "KrestikHub_UI" or child:GetAttribute("IsKrestikHub") then
         pcall(function() child:Destroy() end)
     end
 end
 
-local EspContainer = Instance.new("Folder")
-EspContainer.Name = "EspCache_" .. HttpService:GenerateGUID(false):sub(1, 8)
+local EspContainer = markStealthInstance(Instance.new("Folder"))
+EspContainer.Name = generateNativeStealthName("CoreRender_")
 EspContainer.Parent = targetParent
 
 local function getCharacter(player)
@@ -593,25 +656,123 @@ local function isLocalVehiclePart(inst)
 end
 
 -----------------------------------------------------------
--- УСИЛЕННАЯ СИСТЕМА ОБХОДА АНТИ-ЧИТОВ (O(1) FAST-PATH SPOOFER)
+-- УНИВЕРСАЛЬНЫЙ ОБХОД ROBLOX ANTI-CHEAT (BYFRON / CLIENT / SERVER SHIELD)
 -----------------------------------------------------------
+local function isSuspiciousACName(rawName)
+    local name = tostring(rawName):lower()
+    return name:find("anticheat") or name:find("anti_cheat") or name:find("anti%-cheat")
+        or name:find("ac_check") or name:find("ac_detect") or name:find("ac_log") or name:find("ac_report")
+        or name:find("cheatdetect") or name:find("exploitdetect") or name:find("securitycheck")
+        or name:find("tamper") or name:find("integrity") or name:find("flagplayer")
+        or name:find("speedhack") or name:find("noclip") or name:find("flydetect")
+        or name:find("verifypos") or name:find("positioncheck") or name:find("rubberband")
+        or name:find("telemetry") or name:find("banremote") or name:find("kickremote")
+        or name:find("logerror") or name:find("clienterror") or name:find("scripterror")
+        or name:find("stacktrace") or name:find("violat") or name:find("punish")
+        or name:find("hyperion") or name:find("byfron") or name:find("adonis")
+end
+
+local function sanitizeAntiCheatConnections()
+    if not getconnections then return end
+    local signalsToClean = {
+        LocalPlayer and LocalPlayer.Idled,
+        LogService and LogService.MessageOut,
+        ScriptContext and ScriptContext.Error
+    }
+
+    local char = getCharacter(LocalPlayer)
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if hum then
+            table.insert(signalsToClean, hum.StateChanged)
+            pcall(function() table.insert(signalsToClean, hum:GetPropertyChangedSignal("WalkSpeed")) end)
+            pcall(function() table.insert(signalsToClean, hum:GetPropertyChangedSignal("JumpPower")) end)
+            pcall(function() table.insert(signalsToClean, hum:GetPropertyChangedSignal("JumpHeight")) end)
+            pcall(function() table.insert(signalsToClean, hum:GetPropertyChangedSignal("PlatformStand")) end)
+        end
+        if root then
+            pcall(function() table.insert(signalsToClean, root:GetPropertyChangedSignal("CanCollide")) end)
+            pcall(function() table.insert(signalsToClean, root:GetPropertyChangedSignal("AssemblyLinearVelocity")) end)
+        end
+    end
+
+    for _, sig in ipairs(signalsToClean) do
+        if sig then
+            pcall(function()
+                for _, conn in ipairs(getconnections(sig)) do
+                    if conn.Function and (not isourclosure or not isourclosure(conn.Function)) then
+                        local info = debug and debug.getinfo and debug.getinfo(conn.Function)
+                        local src = info and tostring(info.source):lower() or ""
+                        if src == "" or src:find("anticheat") or src:find("anti_cheat") or src:find("exploit")
+                            or src:find("security") or src:find("client") or src:find("adonis") or src:find("detect") then
+                            conn:Disable()
+                            ACBlockedCount = ACBlockedCount + 1
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end
+
+local function grantClientPhysicsAuthority()
+    pcall(function()
+        if setsimulationradius then
+            setsimulationradius(math.huge, math.huge)
+        elseif sethiddenproperty then
+            sethiddenproperty(LocalPlayer, "MaximumSimulationRadius", math.huge)
+            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+        end
+    end)
+end
+
 pcall(function()
     if hookmetamethod and newcclosure and getnamecallmethod and checkcaller then
+        local dummyKickFn = newcclosure(function()
+            ACBlockedCount = ACBlockedCount + 1
+            return nil
+        end)
+
+        -- Прямой перехват LocalPlayer.Kick через hookfunction (на случай кэширования функции анти-читом)
+        if hookfunction then
+            pcall(function()
+                local origKick = LocalPlayer.Kick
+                if origKick then
+                    hookfunction(origKick, newcclosure(function(self, ...)
+                        if running and Config.AntiCheatBypass and not checkcaller() and self == LocalPlayer then
+                            ACBlockedCount = ACBlockedCount + 1
+                            return nil
+                        end
+                        return origKick(self, ...)
+                    end))
+                end
+            end)
+        end
+
         local old_index
         old_index = hookmetamethod(game, "__index", newcclosure(function(self, key)
             if running and Config.AntiCheatBypass and not checkcaller() then
-                if key == "WalkSpeed" or key == "JumpPower" or key == "JumpHeight" or key == "PlatformStand" then
+                if self == LocalPlayer and (key == "Kick" or key == "kick") then
+                    ACBlockedCount = ACBlockedCount + 1
+                    return dummyKickFn
+                elseif key == "WalkSpeed" or key == "JumpPower" or key == "JumpHeight" or key == "HipHeight" or key == "PlatformStand" or key == "Sit" or key == "AutoRotate" then
                     if typeof(self) == "Instance" and self:IsA("Humanoid") and isLocalCharPart(self) then
                         if key == "WalkSpeed" then return 16 end
                         if key == "JumpPower" then return 50 end
                         if key == "JumpHeight" then return 7.2 end
+                        if key == "HipHeight" then return 2.0 end
                         if key == "PlatformStand" and (Config.FlyOn or Config.DERecordActive) then return false end
+                        if key == "Sit" and Config.SitSpam then return false end
+                        if key == "AutoRotate" and Config.SpinBot then return true end
                     end
-                elseif key == "CanCollide" or key == "AssemblyLinearVelocity" or key == "Velocity" then
+                elseif key == "CanCollide" or key == "AssemblyLinearVelocity" or key == "Velocity" or key == "AssemblyAngularVelocity" or key == "RotVelocity" then
                     if typeof(self) == "Instance" then
-                        if (Config.DERecordActive or Config.VehicleFlyOn) and CachedVehiclePartSet[self] then
+                        if (Config.DERecordActive or Config.VehicleFlyOn or Config.VehicleSpeedOn or Config.VehicleNoFlip) and CachedVehiclePartSet[self] then
                             if key == "CanCollide" then
                                 return true
+                            elseif key == "AssemblyAngularVelocity" or key == "RotVelocity" then
+                                return Vector3.zero
                             else
                                 local realVel = old_index(self, key)
                                 if realVel.Magnitude > 165 then
@@ -621,16 +782,21 @@ pcall(function()
                         elseif self:IsA("BasePart") and isLocalCharPart(self) then
                             if key == "CanCollide" and Config.NoClipOn then
                                 return true
-                            elseif (key == "AssemblyLinearVelocity" or key == "Velocity") and (Config.SpeedOn or Config.FlyOn) then
+                            elseif (key == "AssemblyAngularVelocity" or key == "RotVelocity") and Config.SpinBot then
+                                return Vector3.zero
+                            elseif (key == "AssemblyLinearVelocity" or key == "Velocity") and (Config.SpeedOn or Config.FlyOn or Config.JumpOn or Config.InfJumpOn or Config.JesusWalk or Config.TweenTP) then
                                 local callerScript = getcallingscript and getcallingscript()
                                 if callerScript and callerScript.Name == "Animate" then
                                     return old_index(self, key)
                                 end
                                 local realVel = old_index(self, key)
                                 local horiz = Vector3.new(realVel.X, 0, realVel.Z)
+                                local clampedY = math.clamp(realVel.Y, -55, 52)
                                 if horiz.Magnitude > 18 then
                                     local clamped = horiz.Unit * 16
-                                    return Vector3.new(clamped.X, realVel.Y, clamped.Z)
+                                    return Vector3.new(clamped.X, clampedY, clamped.Z)
+                                elseif realVel.Y ~= clampedY then
+                                    return Vector3.new(realVel.X, clampedY, realVel.Z)
                                 end
                             end
                         end
@@ -651,12 +817,15 @@ pcall(function()
                     elseif typeof(self) == "Instance" and self:IsA("BasePart") and isLocalCharPart(self) and Config.NoClipOn then
                         return
                     end
-                elseif (key == "WalkSpeed" or key == "JumpPower" or key == "JumpHeight") then
+                elseif (key == "WalkSpeed" or key == "JumpPower" or key == "JumpHeight" or key == "PlatformStand") then
                     if typeof(self) == "Instance" and self:IsA("Humanoid") and isLocalCharPart(self) then
                         if key == "WalkSpeed" and Config.SpeedOn then return end
                         if key == "JumpPower" and Config.JumpOn then return end
                         if key == "JumpHeight" and Config.JumpOn then return end
+                        if key == "PlatformStand" and value == true and (Config.FlyOn or Config.AntiRagdoll) then return end
                     end
+                elseif key == "Gravity" and self == Workspace and Config.LowGravity then
+                    return
                 end
             end
             return old_newindex(self, key, value)
@@ -668,19 +837,58 @@ pcall(function()
             if running and Config.AntiCheatBypass and not checkcaller() then
                 if typeof(self) == "Instance" then
                     if self == LocalPlayer and (method == "Kick" or method == "kick") then
+                        ACBlockedCount = ACBlockedCount + 1
                         return nil
                     end
 
-                    if method == "FireServer" or method == "InvokeServer" or method == "Fire" or method == "Invoke" then
-                        local name = tostring(self):lower()
-                        if name:find("anticheat") or name:find("anti_cheat") or name:find("anti%-cheat")
-                            or name:find("ac_check") or name:find("ac_detect") or name:find("ac_log")
-                            or name:find("cheatdetect") or name:find("exploitdetect") or name:find("securitycheck")
-                            or name:find("tamper") or name:find("integrity") or name:find("flagplayer")
-                            or name:find("speedhack") or name:find("noclip") or name:find("flydetect")
-                            or name:find("verifypos") or name:find("positioncheck") or name:find("rubberband")
-                            or name:find("telemetry") or name:find("banremote") or name:find("kickremote") then
+                    -- Скрытие всех GUI/ESP объектов хаба от сканирования CoreGui / PlayerGui / Workspace
+                    if (method == "GetChildren" or method == "GetDescendants") and (self == targetParent or self == Workspace or self == EspContainer) then
+                        local res = old_namecall(self, ...)
+                        if type(res) == "table" then
+                            local filtered = {}
+                            for i = 1, #res do
+                                local item = res[i]
+                                if not isStealthInstance(item) then
+                                    filtered[#filtered + 1] = item
+                                end
+                            end
+                            return filtered
+                        end
+                        return res
+                    elseif (method == "FindFirstChild" or method == "FindFirstChildWhichIsA" or method == "FindFirstChildOfClass") and (self == targetParent or self == Workspace) then
+                        local found = old_namecall(self, ...)
+                        if found and isStealthInstance(found) then
                             return nil
+                        end
+                        return found
+                    end
+
+                    -- Подмена состояния Humanoid (GetState) во время полета/NoClip/AntiRagdoll
+                    if method == "GetState" and self:IsA("Humanoid") and isLocalCharPart(self) then
+                        local st = old_namecall(self, ...)
+                        if (Config.FlyOn or Config.NoClipOn or Config.DERecordActive) and (st == Enum.HumanoidStateType.PlatformStanding or st == Enum.HumanoidStateType.Physics or st == Enum.HumanoidStateType.StrafingNoPhysics) then
+                            return Enum.HumanoidStateType.Running
+                        end
+                        if Config.AntiRagdoll and (st == Enum.HumanoidStateType.Ragdoll or st == Enum.HumanoidStateType.FallingDown) then
+                            return Enum.HumanoidStateType.Running
+                        end
+                        return st
+                    end
+
+                    -- Блокировка анти-чит ремоутов и телеметрии
+                    if method == "FireServer" or method == "InvokeServer" or method == "Fire" or method == "Invoke" then
+                        if isSuspiciousACName(self.Name) then
+                            ACBlockedCount = ACBlockedCount + 1
+                            return nil
+                        end
+                        -- Блокируем передачу строк с сигнатурами экзекутора / стектрейса в репорт-ремоуты
+                        local firstArg = select(1, ...)
+                        if type(firstArg) == "string" then
+                            local lowArg = firstArg:lower()
+                            if lowArg:find("exploit") or lowArg:find("anticheat") or lowArg:find("speedhack") or lowArg:find("flyhack") or lowArg:find("noclip") then
+                                ACBlockedCount = ACBlockedCount + 1
+                                return nil
+                            end
                         end
                     end
                 end
@@ -690,19 +898,26 @@ pcall(function()
     end
 end)
 
-pcall(function()
-    if getconnections then
-        for _, conn in ipairs(getconnections(LocalPlayer.Idled)) do
-            if conn.Function and not isourclosure(conn.Function) then
-                local info = debug.getinfo(conn.Function)
-                local src = info and tostring(info.source):lower() or ""
-                if src:find("anticheat") or src:find("anti_cheat") or src:find("exploit") or src:find("security") then
-                    conn:Disable()
-                end
-            end
+sanitizeAntiCheatConnections()
+grantClientPhysicsAuthority()
+
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.4)
+    if running and Config.AntiCheatBypass then
+        sanitizeAntiCheatConnections()
+        grantClientPhysicsAuthority()
+    end
+end))
+
+table.insert(threads, task.spawn(function()
+    while running do
+        task.wait(4.0)
+        if Config.AntiCheatBypass then
+            sanitizeAntiCheatConnections()
+            grantClientPhysicsAuthority()
         end
     end
-end)
+end))
 
 local function getVehicleData()
     local char = getCharacter(LocalPlayer)
@@ -731,16 +946,14 @@ local function getVehicleData()
     return seat, rootPart, vehicleModel
 end
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "KrestikHub_UI"
+local gui = markStealthInstance(Instance.new("ScreenGui"))
+gui.Name = generateNativeStealthName("RobloxGui_")
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui:SetAttribute("IsKrestikHub", true)
-
-local hubMarker = Instance.new("BoolValue", gui)
-hubMarker.Name = HUB_TAG
-
-gui.Parent = targetParent
+protectStealthGui(gui)
+if not gui.Parent then
+    gui.Parent = targetParent
+end
 
 local mainFrame = Instance.new("Frame", gui)
 mainFrame.Size = UDim2.new(0, 560, 0, 390)
@@ -5049,7 +5262,61 @@ createDropdown(sysTab, "ActiveGameModeLabel", {"None", "Driving Empire", "Steal 
     setGameMode(selected)
 end)
 
-createToggle(sysTab, "AntiCheatBypass")
+createToggle(sysTab, "AntiCheatBypass", function(state)
+    if state then
+        sanitizeAntiCheatConnections()
+        grantClientPhysicsAuthority()
+    end
+end)
+
+local acStatusFrame = Instance.new("Frame", sysTab)
+acStatusFrame.Size = UDim2.new(0.98, 0, 0, 26)
+acStatusFrame.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
+Instance.new("UICorner", acStatusFrame).CornerRadius = UDim.new(0, 4)
+Instance.new("UIStroke", acStatusFrame).Color = Config.BorderColor
+
+local acStatusLabel = Instance.new("TextLabel", acStatusFrame)
+acStatusLabel.Size = UDim2.new(0.94, 0, 1, 0)
+acStatusLabel.Position = UDim2.new(0.03, 0, 0, 0)
+acStatusLabel.BackgroundTransparency = 1
+acStatusLabel.Font = Enum.Font.Code
+acStatusLabel.TextSize = 9
+acStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local function updateACStatusLabel()
+    if Config.AntiCheatBypass then
+        acStatusLabel.Text = "🛡 " .. langStr("ACShieldStatusLabel") .. tostring(ACBlockedCount)
+        acStatusLabel.TextColor3 = Color3.fromRGB(74, 222, 128)
+    else
+        acStatusLabel.Text = "⚠ " .. langStr("ACShieldOffLabel")
+        acStatusLabel.TextColor3 = Color3.fromRGB(248, 113, 113)
+    end
+end
+updateACStatusLabel()
+table.insert(UI_Elements, {instance = acStatusLabel, key = "ACShieldStatusLabel", updateFunc = updateACStatusLabel})
+
+table.insert(threads, task.spawn(function()
+    local lastShownCount = -1
+    while running do
+        task.wait(1.0)
+        if lastShownCount ~= ACBlockedCount then
+            lastShownCount = ACBlockedCount
+            updateACStatusLabel()
+        end
+    end
+end))
+
+createButton(sysTab, "ACReapplyBtn", function()
+    sanitizeAntiCheatConnections()
+    grantClientPhysicsAuthority()
+    updateACStatusLabel()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KRESTIK HUB",
+        Text = "Roblox Anti-Cheat Shield обновлён!",
+        Duration = 2.5
+    })
+end)
+
 createToggle(sysTab, "AntiAFK")
 
 local bindFrame = Instance.new("Frame", sysTab)
@@ -5149,9 +5416,59 @@ killBtn.MouseLeave:Connect(function()
     killBtn.BackgroundColor3 = Color3.fromRGB(45, 25, 30)
 end)
 
+local function unloadHubCleanly()
+    running = false
+
+    disconnectStealListener()
+    for _, conn in ipairs(connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+
+    pcall(function()
+        restoreOriginalCollisions()
+        clearAllStealVisuals()
+        clearAllUnoVisuals()
+        disconnectDEListener()
+        clearAllDEVisuals()
+        DEActiveRunToken = DEActiveRunToken + 1
+        setVehicleFlightNoClip(nil, false)
+        for p, _ in pairs(PlayerESPRegistry) do
+            destroyPlayerESP(p)
+        end
+        for seat, orig in pairs(OriginalSeatStats) do
+            if seat and seat.Parent and seat:IsA("VehicleSeat") then
+                seat.MaxSpeed = orig.MaxSpeed
+                seat.Torque = orig.Torque
+            end
+        end
+        Lighting.Brightness = OriginalLighting.Brightness
+        Lighting.ClockTime = OriginalLighting.ClockTime
+        Lighting.FogEnd = OriginalLighting.FogEnd
+        Lighting.GlobalShadows = OriginalLighting.GlobalShadows
+        Lighting.Ambient = OriginalLighting.Ambient
+    end)
+
+    pcall(function()
+        EspContainer:Destroy()
+    end)
+
+    workspace.Gravity = 196.2
+    pcall(function() gui:Destroy() end)
+end
+
+pcall(function()
+    local env = (getgenv and getgenv()) or _G
+    if env then
+        env._KrestikHubCleanup = unloadHubCleanly
+    end
+end)
+
 killBtn.MouseButton1Click:Connect(function()
     playClickSound()
-    running = false
+    unloadHubCleanly()
+end)
+
+if false then -- legacy block replaced cleanly above
 
     disconnectStealListener()
     for _, conn in ipairs(connections) do
@@ -5189,6 +5506,7 @@ killBtn.MouseButton1Click:Connect(function()
     workspace.Gravity = 196.2
     gui:Destroy()
 end)
+end
 
 activateTabByName("Movement")
 refreshAllTranslations()
