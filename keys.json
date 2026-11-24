@@ -1,0 +1,6 @@
+{
+  "KRESTIK-DAY-1": { "durationHours": 24, "label": "Ключ на 1 день" },
+  "KRESTIK-WEEK-7": { "durationHours": 168, "label": "VIP на 7 дней" },
+  "KRESTIK-USER-VIP": { "durationHours": 720, "userId": 123456789, "label": "Личный ключ (30 дней)" },
+  "KRESTIK-OLD-KEY": { "durationHours": 24, "revoked": true, "label": "Заблокированный ключ" }
+}
