@@ -1,6 +1,27 @@
 {
-  "KRESTIK-DAY-1": { "durationHours": 24, "label": "Ключ на 1 день" },
-  "KRESTIK-WEEK-7": { "durationHours": 168, "label": "VIP на 7 дней" },
-  "KRESTIK-USER-VIP": { "durationHours": 720, "userId": 123456789, "label": "Личный ключ (30 дней)" },
-  "KRESTIK-OLD-KEY": { "durationHours": 24, "revoked": true, "label": "Заблокированный ключ" }
+  "KRESTIK-LACI35K21PE": {
+    "durationHours": 24,
+    "label": "Free (24 часа)"
+  },
+  "KRESTIK-A9DJ2SB8WQE": {
+    "durationHours": 72,
+    "label": "Start (3 дня)"
+  },
+  "KRESTIK-E7QK29UOQQR": {
+    "durationHours": 168,
+    "label": "VIP (7 дней)"
+  },
+  "KRESTIK-XI6VBTCJBS7": {
+    "durationHours": 720,
+    "label": "PRO (30 дней)"
+  },
+  "KRESTIK-3Z4Z61NUMLH": {
+    "durationHours": 0,
+    "label": "Lifetime (Навсегда)"
+  },
+  "KRESTIK-OWNER999999": {
+    "durationHours": 0,
+    "label": "Owner / Lifetime (Навсегда)",
+    "isAdmin": true
+  }
 }
