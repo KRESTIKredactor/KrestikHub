@@ -1,6 +1,15 @@
 local _cloneref = (typeof(cloneref) == "function") and cloneref or function(obj) return obj end
 local function getSafeService(name)
-    return _cloneref(game:GetService(name))
+    local ok, svc = pcall(function()
+        return _cloneref(game:GetService(name))
+    end)
+    if ok and svc then
+        return svc
+    end
+    local okRaw, rawSvc = pcall(function()
+        return game:GetService(name)
+    end)
+    return okRaw and rawSvc or nil
 end
 
 local Players = getSafeService("Players")
@@ -654,7 +663,13 @@ end
 
 local EspContainer = markStealthInstance(Instance.new("Folder"))
 EspContainer.Name = generateNativeStealthName("CoreRender_")
-EspContainer.Parent = targetParent
+local okEspParent = pcall(function()
+    EspContainer.Parent = targetParent
+end)
+if not okEspParent or not EspContainer.Parent then
+    targetParent = LocalPlayer:WaitForChild("PlayerGui")
+    EspContainer.Parent = targetParent
+end
 
 local function getCharacter(player)
     if not player then return nil end
@@ -997,7 +1012,12 @@ gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 protectStealthGui(gui)
 if not gui.Parent then
-    gui.Parent = targetParent
+    local okGuiP = pcall(function()
+        gui.Parent = targetParent
+    end)
+    if not okGuiP or not gui.Parent then
+        gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
 end
 
 local mainFrame = Instance.new("Frame", gui)
@@ -5516,45 +5536,7 @@ killBtn.MouseButton1Click:Connect(function()
     unloadHubCleanly()
 end)
 
-if false then -- legacy block replaced cleanly above
 
-    disconnectStealListener()
-    for _, conn in ipairs(connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-
-    pcall(function()
-        restoreOriginalCollisions()
-        clearAllStealVisuals()
-        clearAllUnoVisuals()
-        disconnectDEListener()
-        clearAllDEVisuals()
-        DEActiveRunToken = DEActiveRunToken + 1
-        setVehicleFlightNoClip(nil, false)
-        for p, _ in pairs(PlayerESPRegistry) do
-            destroyPlayerESP(p)
-        end
-        for seat, orig in pairs(OriginalSeatStats) do
-            if seat and seat.Parent and seat:IsA("VehicleSeat") then
-                seat.MaxSpeed = orig.MaxSpeed
-                seat.Torque = orig.Torque
-            end
-        end
-        Lighting.Brightness = OriginalLighting.Brightness
-        Lighting.ClockTime = OriginalLighting.ClockTime
-        Lighting.FogEnd = OriginalLighting.FogEnd
-        Lighting.GlobalShadows = OriginalLighting.GlobalShadows
-        Lighting.Ambient = OriginalLighting.Ambient
-    end)
-
-    pcall(function()
-        EspContainer:Destroy()
-    end)
-
-    workspace.Gravity = 196.2
-    gui:Destroy()
-end)
-end
 
 -----------------------------------------------------------
 -- МОДУЛЬ ПРОВЕРКИ, ГЕНЕРАЦИИ И СИНХРОНИЗАЦИИ КЛЮЧЕЙ (GITHUB + LOCAL)
