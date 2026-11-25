@@ -134,6 +134,29 @@ local Config = {
     RagdollSelf = false
 }
 
+-----------------------------------------------------------
+-- НАСТРОЙКИ СИСТЕМЫ КЛЮЧЕЙ (KEY SYSTEM)
+-----------------------------------------------------------
+local KeySystemConfig = {
+    Enabled = true,
+    SaveKey = true,
+    SaveFileName = "KrestikHub_Key.dat",
+    GitHubTokenFile = "KrestikHub_GitHubToken.dat",
+    GitHubRepoOwner = "KRESTIKredactor",
+    GitHubRepoName = "KrestikHub",
+    GitHubFilePath = "keys.json",
+    GetKeyLink = "https://discord.gg/krestikhub",
+    RemoteKeysUrl = "https://raw.githubusercontent.com/KRESTIKredactor/KrestikHub/refs/heads/main/keys.json",
+
+    -- Резервные встроенные ключи формата KRESTIK-........... (11 случайных символов)
+    LocalKeys = {
+        ["KRESTIK-FREE24H0001"] = { durationHours = 24,      label = "Free (24 часа)" },
+        ["KRESTIK-VIP7DAYS001"] = { durationHours = 24 * 7,  label = "VIP (7 дней)" },
+        ["KRESTIK-PRO30DAYS01"] = { durationHours = 24 * 30, label = "PRO (30 дней)" },
+        ["KRESTIK-OWNER999999"] = { durationHours = 0,       label = "Owner / Lifetime (Навсегда)", isAdmin = true }
+    }
+}
+
 -- База редкостей предметов для Steal or Die (строго по возрастанию редкости)
 local StealRarityOrder = {
     ["Common"]    = {rank = 1, label = "COMMON",    color = Color3.fromRGB(185, 192, 204), hex = "#B9C0CC"},
@@ -173,6 +196,17 @@ local Translations = {
         ACShieldStatusLabel = "Roblox AC Shield: ACTIVE | Intercepted: ",
         ACShieldOffLabel = "Roblox AC Shield: DISABLED",
         ACReapplyBtn = "Refresh AC Bypass & Clean Hooks",
+        KeyResetBtn = "Reset Saved Key",
+        KeyGenCategory = "Key Category Preset",
+        KeyGenCustomLabel = "Custom Category Name",
+        KeyGenCustomLabelPh = "e.g. YouTuber / VIP",
+        KeyGenHours = "Duration (Hours, 0=Lifetime)",
+        KeyGenAmount = "Keys Count (1-50)",
+        KeyGenUserId = "Lock to UserId (0=Any)",
+        KeyGenCopyJsonBtn = "Generate Keys & Copy JSON",
+        KeyGenGitHubToken = "GitHub Token (Auto-Upload)",
+        KeyGenGitHubTokenPh = "ghp_xxxxxxxxxxxx",
+        KeyGenPushGitHubBtn = "Generate & Push to GitHub keys.json",
         MenuBind = "Menu Key",
         FpsBoost = "Ultra FPS Boost (Potato PC)",
         Discord = "Copy Discord Link",
@@ -309,6 +343,17 @@ local Translations = {
         ACShieldStatusLabel = "Щит Roblox AC: АКТИВЕН | Перехвачено: ",
         ACShieldOffLabel = "Щит Roblox AC: ОТКЛЮЧЕН",
         ACReapplyBtn = "Обновить обход и очистить ловушки AC",
+        KeyResetBtn = "Сбросить сохранённый ключ",
+        KeyGenCategory = "Категория ключа",
+        KeyGenCustomLabel = "Своё название категории",
+        KeyGenCustomLabelPh = "Напр: VIP / Спонсор / Тестер",
+        KeyGenHours = "Срок в часах (0 = Навсегда)",
+        KeyGenAmount = "Кол-во ключей за раз (1-50)",
+        KeyGenUserId = "Привязка к UserId (0 = Все)",
+        KeyGenCopyJsonBtn = "Создать ключи (Скопировать JSON)",
+        KeyGenGitHubToken = "GitHub Token (Авто-заливка)",
+        KeyGenGitHubTokenPh = "ghp_xxxxxxxxxxxx",
+        KeyGenPushGitHubBtn = "Создать и залить в GitHub keys.json",
         MenuBind = "Клавиша консоли управления",
         FpsBoost = "Макс. FPS Boost (Для слабых ПК)",
         Discord = "Скопировать ссылку Discord",
@@ -1048,7 +1093,10 @@ local function closeAllDropdowns(exceptContainer)
     end
 end
 
+local isKeyAuthenticated = not KeySystemConfig.Enabled
+
 local function toggleMenu()
+    if not isKeyAuthenticated then return end
     menuOpen = not menuOpen
     mainFrame.Visible = menuOpen
     if not menuOpen then
@@ -5508,8 +5556,715 @@ if false then -- legacy block replaced cleanly above
 end)
 end
 
-activateTabByName("Movement")
-refreshAllTranslations()
+-----------------------------------------------------------
+-- МОДУЛЬ ПРОВЕРКИ, ГЕНЕРАЦИИ И СИНХРОНИЗАЦИИ КЛЮЧЕЙ (GITHUB + LOCAL)
+-----------------------------------------------------------
+local ActiveKeyInfo = {
+    key = "NONE",
+    label = "Без ключа",
+    expiresAt = 0,
+    isAdmin = false
+}
+
+local KeyGenState = {
+    CategoryPreset = "VIP (7 дней)",
+    CustomLabel = "",
+    DurationHours = 168,
+    Amount = 1,
+    TargetUserId = 0,
+    GitHubToken = ""
+}
+
+local KeyCategoryPresets = {
+    ["Free (24 часа)"]        = { hours = 24,      label = "Free (24 часа)" },
+    ["Start (3 дня)"]         = { hours = 72,      label = "Start (3 дня)" },
+    ["VIP (7 дней)"]          = { hours = 168,     label = "VIP (7 дней)" },
+    ["PRO (30 дней)"]         = { hours = 720,     label = "PRO (30 дней)" },
+    ["Lifetime (Навсегда)"]   = { hours = 0,       label = "Lifetime (Навсегда)" },
+    ["Custom (Своя)"]         = { hours = 24,      label = "Custom" }
+}
+
+local KeyCategoryDropdownOrder = {
+    "Free (24 часа)",
+    "Start (3 дня)",
+    "VIP (7 дней)",
+    "PRO (30 дней)",
+    "Lifetime (Навсегда)",
+    "Custom (Своя)"
+}
+
+-- Генератор ключей строго в формате KRESTIK-........... (11 случайных символов)
+local function generateFormattedKrestikKey()
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    local chars = table.create(11)
+    for i = 1, 11 do
+        local idx = math.random(1, #alphabet)
+        chars[i] = alphabet:sub(idx, idx)
+    end
+    return "KRESTIK-" .. table.concat(chars)
+end
+
+local function formatRemainingKeyTime(expiresAt)
+    if not expiresAt or expiresAt <= 0 then
+        return "Навсегда (Lifetime)"
+    end
+    local rem = math.max(0, expiresAt - os.time())
+    local days = math.floor(rem / 86400)
+    local hours = math.floor((rem % 86400) / 3600)
+    local mins = math.floor((rem % 3600) / 60)
+    if days > 0 then
+        return string.format("%dд %dч %dм", days, hours, mins)
+    elseif hours > 0 then
+        return string.format("%dч %dм", hours, mins)
+    else
+        return string.format("%d мин", math.max(1, mins))
+    end
+end
+
+local function saveKeyRecord(keyStr, activatedAt)
+    if not KeySystemConfig.SaveKey then return end
+    local payload = HttpService:JSONEncode({
+        key = keyStr,
+        activatedAt = activatedAt
+    })
+    pcall(function()
+        local env = (getgenv and getgenv()) or _G
+        if env then
+            env._KrestikSavedKeyPayload = payload
+        end
+    end)
+    if writefile then
+        pcall(function()
+            writefile(KeySystemConfig.SaveFileName, payload)
+        end)
+    end
+end
+
+local function loadKeyRecord()
+    if not KeySystemConfig.SaveKey then return nil end
+    local raw = nil
+    pcall(function()
+        local env = (getgenv and getgenv()) or _G
+        if env and type(env._KrestikSavedKeyPayload) == "string" then
+            raw = env._KrestikSavedKeyPayload
+        end
+    end)
+    if not raw and readfile and isfile then
+        pcall(function()
+            if isfile(KeySystemConfig.SaveFileName) then
+                raw = readfile(KeySystemConfig.SaveFileName)
+            end
+        end)
+    end
+    if raw and raw ~= "" then
+        local ok, decoded = pcall(function()
+            return HttpService:JSONDecode(raw)
+        end)
+        if ok and type(decoded) == "table" and decoded.key then
+            return decoded
+        end
+    end
+    return nil
+end
+
+local function clearSavedKeyRecord()
+    pcall(function()
+        local env = (getgenv and getgenv()) or _G
+        if env then
+            env._KrestikSavedKeyPayload = nil
+        end
+    end)
+    if delfile and isfile then
+        pcall(function()
+            if isfile(KeySystemConfig.SaveFileName) then
+                delfile(KeySystemConfig.SaveFileName)
+            end
+        end)
+    elseif writefile then
+        pcall(function()
+            writefile(KeySystemConfig.SaveFileName, "")
+        end)
+    end
+end
+
+local function loadSavedGitHubToken()
+    local tok = ""
+    if readfile and isfile then
+        pcall(function()
+            if isfile(KeySystemConfig.GitHubTokenFile) then
+                tok = tostring(readfile(KeySystemConfig.GitHubTokenFile) or ""):gsub("%s+", "")
+            end
+        end)
+    end
+    KeyGenState.GitHubToken = tok
+    return tok
+end
+
+local function saveGitHubToken(tok)
+    local clean = tostring(tok or ""):gsub("%s+", "")
+    KeyGenState.GitHubToken = clean
+    if writefile then
+        pcall(function()
+            writefile(KeySystemConfig.GitHubTokenFile, clean)
+        end)
+    end
+end
+
+loadSavedGitHubToken()
+
+local function fetchRemoteKeysMap()
+    if not KeySystemConfig.RemoteKeysUrl or KeySystemConfig.RemoteKeysUrl == "" then
+        return nil
+    end
+    local sep = KeySystemConfig.RemoteKeysUrl:find("?") and "&" or "?"
+    local urlWithBust = KeySystemConfig.RemoteKeysUrl .. sep .. "t=" .. tostring(os.time())
+    local okHttp, body = pcall(function()
+        return game:HttpGet(urlWithBust, true)
+    end)
+    if okHttp and body and body ~= "" then
+        local okJson, remoteTable = pcall(function()
+            return HttpService:JSONDecode(body)
+        end)
+        if okJson and type(remoteTable) == "table" then
+            return remoteTable.keys or remoteTable
+        end
+    end
+    return nil
+end
+
+local function verifyKeyAccess(inputKey, existingActivatedAt)
+    local cleanKey = tostring(inputKey or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if cleanKey == "" then
+        return false, "Введите ключ!"
+    end
+
+    -- Сначала проверяем удалённую базу GitHub (чтобы отзыв или изменение срока срабатывали мгновенно)
+    local keyEntry = nil
+    local remoteMap = fetchRemoteKeysMap()
+    if type(remoteMap) == "table" and type(remoteMap[cleanKey]) == "table" then
+        keyEntry = remoteMap[cleanKey]
+    end
+
+    -- Если в удалённой базе нет (или нет интернета к GitHub), проверяем локальный список
+    if not keyEntry then
+        keyEntry = KeySystemConfig.LocalKeys[cleanKey]
+    end
+
+    if type(keyEntry) ~= "table" then
+        return false, "Неверный ключ доступа!"
+    end
+
+    if keyEntry.revoked then
+        return false, "Этот ключ был отозван!"
+    end
+
+    if keyEntry.userId and tonumber(keyEntry.userId) and tonumber(keyEntry.userId) > 0 and tonumber(keyEntry.userId) ~= LocalPlayer.UserId then
+        return false, "Ключ привязан к другому аккаунту Roblox!"
+    end
+
+    local now = os.time()
+    local activatedAt = tonumber(existingActivatedAt) or now
+    local expiresAt = 0
+
+    if keyEntry.expiresAt and tonumber(keyEntry.expiresAt) and tonumber(keyEntry.expiresAt) > 0 then
+        expiresAt = tonumber(keyEntry.expiresAt)
+    elseif keyEntry.durationHours and tonumber(keyEntry.durationHours) and tonumber(keyEntry.durationHours) > 0 then
+        expiresAt = activatedAt + math.floor(tonumber(keyEntry.durationHours) * 3600)
+    end
+
+    if expiresAt > 0 and now >= expiresAt then
+        clearSavedKeyRecord()
+        return false, "Срок действия ключа истёк! Получите новый."
+    end
+
+    saveKeyRecord(cleanKey, activatedAt)
+    ActiveKeyInfo = {
+        key = cleanKey,
+        label = keyEntry.label or "Active Key",
+        expiresAt = expiresAt,
+        isAdmin = keyEntry.isAdmin == true
+    }
+    return true, "Успешно! Осталось: " .. formatRemainingKeyTime(expiresAt)
+end
+
+-- Base64 кодировщик для прямой заливки keys.json в GitHub API без внешних библиотек
+local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function base64Encode(data)
+    return ((data:gsub(".", function(x)
+        local r, b = "", x:byte()
+        for i = 8, 1, -1 do
+            r = r .. (b % 2^i - b % 2^(i - 1) > 0 and "1" or "0")
+        end
+        return r
+    end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(x)
+        if #x < 6 then return "" end
+        local c = 0
+        for i = 1, 6 do
+            c = c + (x:sub(i, i) == "1" and 2^(6 - i) or 0)
+        end
+        return b64chars:sub(c + 1, c + 1)
+    end) .. ({ "", "==", "=" })[#data % 3 + 1])
+end
+
+local function generateKeysBatchFromUI()
+    local preset = KeyCategoryPresets[KeyGenState.CategoryPreset] or KeyCategoryPresets["VIP (7 дней)"]
+    local finalLabel = (KeyGenState.CustomLabel ~= "" and KeyGenState.CustomLabel) or preset.label
+    local hours = tonumber(KeyGenState.DurationHours)
+    if hours == nil then
+        hours = preset.hours
+    end
+    hours = math.max(0, math.floor(hours))
+
+    local count = math.clamp(math.floor(tonumber(KeyGenState.Amount) or 1), 1, 50)
+    local targetUid = math.max(0, math.floor(tonumber(KeyGenState.TargetUserId) or 0))
+
+    local generatedList = {}
+    local jsonLines = {}
+
+    for i = 1, count do
+        local k = generateFormattedKrestikKey()
+        local entryObj = {
+            durationHours = hours,
+            label = finalLabel
+        }
+        if targetUid > 0 then
+            entryObj.userId = targetUid
+        end
+
+        -- Сразу добавляем в оперативную память текущей сессии, чтобы ключ работал мгновенно
+        KeySystemConfig.LocalKeys[k] = entryObj
+        table.insert(generatedList, { key = k, data = entryObj })
+
+        if targetUid > 0 then
+            table.insert(jsonLines, string.format('  "%s": { "durationHours": %d, "userId": %d, "label": %q }', k, hours, targetUid, finalLabel))
+        else
+            table.insert(jsonLines, string.format('  "%s": { "durationHours": %d, "label": %q }', k, hours, finalLabel))
+        end
+    end
+
+    return generatedList, table.concat(jsonLines, ",\n"), finalLabel, hours
+end
+
+local function pushGeneratedKeysToGitHub(generatedList)
+    local httpReq = (syn and syn.request) or (http and http.request) or http_request or request
+    if not httpReq then
+        return false, "Экзекутор не поддерживает HTTP-запросы (request). Используйте копирование JSON."
+    end
+    local token = KeyGenState.GitHubToken
+    if not token or token == "" then
+        return false, "Укажите GitHub Token в поле выше!"
+    end
+
+    local apiUrl = string.format(
+        "https://api.github.com/repos/%s/%s/contents/%s",
+        KeySystemConfig.GitHubRepoOwner,
+        KeySystemConfig.GitHubRepoName,
+        KeySystemConfig.GitHubFilePath
+    )
+
+    local headers = {
+        ["Authorization"] = "Bearer " .. token,
+        ["Accept"] = "application/vnd.github+json",
+        ["User-Agent"] = "KrestikHub-KeyManager",
+        ["Content-Type"] = "application/json"
+    }
+
+    -- 1. Получаем текущий keys.json и его SHA
+    local getResp = httpReq({
+        Url = apiUrl,
+        Method = "GET",
+        Headers = headers
+    })
+
+    local currentSha = nil
+    local keysDatabase = {}
+
+    if getResp and getResp.StatusCode == 200 and getResp.Body then
+        local okMeta, metaJson = pcall(function()
+            return HttpService:JSONDecode(getResp.Body)
+        end)
+        if okMeta and type(metaJson) == "table" then
+            currentSha = metaJson.sha
+            local rawRemote = fetchRemoteKeysMap()
+            if type(rawRemote) == "table" then
+                keysDatabase = rawRemote
+            end
+        end
+    elseif getResp and getResp.StatusCode ~= 404 then
+        return false, "Ошибка GitHub GET: HTTP " .. tostring(getResp and getResp.StatusCode or "nil")
+    end
+
+    -- 2. Добавляем новые ключи
+    for _, item in ipairs(generatedList) do
+        keysDatabase[item.key] = item.data
+    end
+
+    -- 3. Формируем красивый отформатированный JSON
+    local formattedEntries = {}
+    for k, info in pairs(keysDatabase) do
+        if type(info) == "table" then
+            local parts = {
+                string.format('"durationHours": %d', tonumber(info.durationHours) or 0),
+                string.format('"label": %q', tostring(info.label or "Key"))
+            }
+            if info.userId and tonumber(info.userId) and tonumber(info.userId) > 0 then
+                table.insert(parts, string.format('"userId": %d', tonumber(info.userId)))
+            end
+            if info.revoked then
+                table.insert(parts, '"revoked": true')
+            end
+            if info.isAdmin then
+                table.insert(parts, '"isAdmin": true')
+            end
+            table.insert(formattedEntries, string.format('  %q: { %s }', tostring(k), table.concat(parts, ", ")))
+        end
+    end
+    table.sort(formattedEntries)
+    local finalJsonText = "{\n" .. table.concat(formattedEntries, ",\n") .. "\n}\n"
+
+    local putPayload = {
+        message = string.format("Add %d key(s) via Krestik Hub Key Generator", #generatedList),
+        content = base64Encode(finalJsonText)
+    }
+    if currentSha then
+        putPayload.sha = currentSha
+    end
+
+    local putResp = httpReq({
+        Url = apiUrl,
+        Method = "PUT",
+        Headers = headers,
+        Body = HttpService:JSONEncode(putPayload)
+    })
+
+    if putResp and (putResp.StatusCode == 200 or putResp.StatusCode == 201) then
+        return true, "Ключи успешно залиты в GitHub keys.json!"
+    else
+        return false, "Ошибка GitHub PUT: HTTP " .. tostring(putResp and putResp.StatusCode or "nil")
+    end
+end
+
+-- Блок статуса лицензии и полноценный Генератор Ключей во вкладке «Система»
+local keyStatusFrame = Instance.new("Frame", sysTab)
+keyStatusFrame.Size = UDim2.new(0.98, 0, 0, 28)
+keyStatusFrame.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
+Instance.new("UICorner", keyStatusFrame).CornerRadius = UDim.new(0, 4)
+Instance.new("UIStroke", keyStatusFrame).Color = Config.BorderColor
+
+local keyStatusLabel = Instance.new("TextLabel", keyStatusFrame)
+keyStatusLabel.Size = UDim2.new(0.94, 0, 1, 0)
+keyStatusLabel.Position = UDim2.new(0.03, 0, 0, 0)
+keyStatusLabel.BackgroundTransparency = 1
+keyStatusLabel.Font = Enum.Font.Code
+keyStatusLabel.TextSize = 9
+keyStatusLabel.TextColor3 = Color3.fromRGB(165, 180, 252)
+keyStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local function updateKeyLicenseHUD()
+    keyStatusLabel.Text = string.format("🔑 %s | %s", ActiveKeyInfo.label, formatRemainingKeyTime(ActiveKeyInfo.expiresAt))
+end
+updateKeyLicenseHUD()
+
+createButton(sysTab, "KeyResetBtn", function()
+    clearSavedKeyRecord()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KRESTIK HUB",
+        Text = "Сохранённый ключ удалён. При следующем запуске потребуется ввод ключа.",
+        Duration = 4
+    })
+end)
+
+-- Конструктор ключей под свои категории (формат KRESTIK-...........)
+Config.KeyGenCategory = KeyGenState.CategoryPreset
+Config.KeyGenHours = KeyGenState.DurationHours
+Config.KeyGenAmount = KeyGenState.Amount
+Config.KeyGenUserId = KeyGenState.TargetUserId
+
+createDropdown(sysTab, "KeyGenCategory", KeyCategoryDropdownOrder, function(selected)
+    KeyGenState.CategoryPreset = selected
+    local p = KeyCategoryPresets[selected]
+    if p then
+        KeyGenState.DurationHours = p.hours
+        Config.KeyGenHours = p.hours
+        refreshAllTranslations()
+    end
+end)
+
+createTextBox(sysTab, "KeyGenCustomLabel", "KeyGenCustomLabelPh", function(text)
+    KeyGenState.CustomLabel = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end)
+
+createNumberInput(sysTab, "KeyGenHours", 0, 87600, function(val)
+    KeyGenState.DurationHours = val
+end)
+
+createNumberInput(sysTab, "KeyGenAmount", 1, 50, function(val)
+    KeyGenState.Amount = val
+end)
+
+createNumberInput(sysTab, "KeyGenUserId", 0, 999999999999, function(val)
+    KeyGenState.TargetUserId = val
+end)
+
+createButton(sysTab, "KeyGenCopyJsonBtn", function()
+    local genList, jsonSnippet, labelUsed, hoursUsed = generateKeysBatchFromUI()
+    local plainKeys = {}
+    for _, item in ipairs(genList) do
+        table.insert(plainKeys, item.key)
+    end
+
+    pcall(function()
+        if setclipboard then
+            setclipboard(jsonSnippet)
+        end
+    end)
+
+    local hudLines = {
+        string.format("<b>Категория:</b> <font color='#FBBF24'>%s</font> (%s)", labelUsed, hoursUsed == 0 and "Навсегда" or (hoursUsed .. " ч.")),
+        "<b>JSON для keys.json скопирован в буфер!</b>\n",
+        "<b>Созданные ключи (формат KRESTIK-...........):</b>"
+    }
+    for i, k in ipairs(plainKeys) do
+        hudLines[#hudLines + 1] = string.format("%d. <font color='#4ADE80'><b>%s</b></font>", i, k)
+    end
+    showModeHUD("KRESTIK KEY GENERATOR", table.concat(hudLines, "\n"))
+
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KRESTIK KEY GEN",
+        Text = string.format("Создано %d ключ(ей)!\nПервый: %s\nJSON скопирован для keys.json", #plainKeys, plainKeys[1] or ""),
+        Duration = 5
+    })
+end)
+
+createTextBox(sysTab, "KeyGenGitHubToken", "KeyGenGitHubTokenPh", function(text)
+    saveGitHubToken(text)
+end)
+
+createButton(sysTab, "KeyGenPushGitHubBtn", function()
+    local genList, jsonSnippet, labelUsed, hoursUsed = generateKeysBatchFromUI()
+    local plainKeys = {}
+    for _, item in ipairs(genList) do
+        table.insert(plainKeys, item.key)
+    end
+
+    task.spawn(function()
+        local okPush, statusMsg = pushGeneratedKeysToGitHub(genList)
+        if okPush then
+            pcall(function()
+                if setclipboard then
+                    setclipboard(table.concat(plainKeys, "\n"))
+                end
+            end)
+            local hudLines = {
+                "<font color='#4ADE80'><b>✔ Успешно загружено в GitHub keys.json!</b></font>",
+                string.format("<b>Категория:</b> %s (%s)", labelUsed, hoursUsed == 0 and "Навсегда" or (hoursUsed .. " ч.")),
+                "<b>Сами ключи скопированы в буфер для выдачи:</b>\n"
+            }
+            for i, k in ipairs(plainKeys) do
+                hudLines[#hudLines + 1] = string.format("%d. <font color='#38BDF8'><b>%s</b></font>", i, k)
+            end
+            showModeHUD("GITHUB KEYS.JSON ОБНОВЛЁН", table.concat(hudLines, "\n"))
+        else
+            pcall(function()
+                if setclipboard then
+                    setclipboard(jsonSnippet)
+                end
+            end)
+            showModeHUD(
+                "GITHUB PUSH • ИНФО",
+                string.format(
+                    "<font color='#F87171'>%s</font>\n\n<b>JSON ключей скопирован в буфер вручную:</b>\n<font color='#4ADE80'>%s</font>",
+                    statusMsg, plainKeys[1] or ""
+                )
+            )
+        end
+
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "KRESTIK GITHUB SYNC",
+            Text = statusMsg,
+            Duration = 4
+        })
+    end)
+end)
+
+-- Инициализация проверки ключа при запуске
+local function unlockMainHubUI()
+    isKeyAuthenticated = true
+    menuOpen = true
+    mainFrame.Visible = true
+    updateKeyLicenseHUD()
+    activateTabByName("Movement")
+    refreshAllTranslations()
+end
+
+if not KeySystemConfig.Enabled then
+    ActiveKeyInfo = { key = "DISABLED", label = "Key System Off", expiresAt = 0, isAdmin = true }
+    unlockMainHubUI()
+else
+    local savedRec = loadKeyRecord()
+    local autoOk = false
+    if savedRec then
+        autoOk = verifyKeyAccess(savedRec.key, savedRec.activatedAt)
+    end
+
+    if autoOk then
+        unlockMainHubUI()
+    else
+        mainFrame.Visible = false
+        menuOpen = false
+
+        local keyFrame = Instance.new("Frame", gui)
+        keyFrame.Size = UDim2.new(0, 390, 0, 215)
+        keyFrame.Position = UDim2.new(0.5, -195, 0.5, -107)
+        keyFrame.BackgroundColor3 = Config.BGColor
+        keyFrame.BorderSizePixel = 0
+        keyFrame.Active = true
+        Instance.new("UICorner", keyFrame).CornerRadius = UDim.new(0, 6)
+        local kStroke = Instance.new("UIStroke", keyFrame)
+        kStroke.Color = Config.ThemeColor
+        kStroke.Thickness = 1.2
+
+        local kTop = Instance.new("Frame", keyFrame)
+        kTop.Size = UDim2.new(1, 0, 0, 34)
+        kTop.BackgroundColor3 = Color3.fromRGB(18, 19, 24)
+        kTop.BorderSizePixel = 0
+        Instance.new("UICorner", kTop).CornerRadius = UDim.new(0, 6)
+        makeDraggable(kTop, keyFrame)
+
+        local kTitle = Instance.new("TextLabel", kTop)
+        kTitle.Size = UDim2.new(0.8, 0, 1, 0)
+        kTitle.Position = UDim2.new(0.04, 0, 0, 0)
+        kTitle.BackgroundTransparency = 1
+        kTitle.Text = "🔐 KRESTIK HUB V0.9 • KEY SYSTEM"
+        kTitle.TextColor3 = Color3.fromRGB(240, 242, 245)
+        kTitle.Font = Enum.Font.GothamBold
+        kTitle.TextSize = 11
+        kTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+        local kClose = Instance.new("TextButton", kTop)
+        kClose.Size = UDim2.new(0, 22, 0, 22)
+        kClose.Position = UDim2.new(1, -28, 0.5, -11)
+        kClose.BackgroundColor3 = Config.PanelColor
+        kClose.Text = "✕"
+        kClose.TextColor3 = Color3.fromRGB(180, 185, 200)
+        kClose.Font = Enum.Font.GothamBold
+        kClose.TextSize = 10
+        Instance.new("UICorner", kClose).CornerRadius = UDim.new(0, 4)
+        kClose.MouseButton1Click:Connect(function()
+            playClickSound()
+            unloadHubCleanly()
+        end)
+
+        local kDesc = Instance.new("TextLabel", keyFrame)
+        kDesc.Size = UDim2.new(0.92, 0, 0, 32)
+        kDesc.Position = UDim2.new(0.04, 0, 0, 42)
+        kDesc.BackgroundTransparency = 1
+        kDesc.Text = "Введите ключ активации для доступа к Krestik Hub.\nНажмите «Получить ключ», чтобы скопировать ссылку."
+        kDesc.TextColor3 = Color3.fromRGB(175, 182, 198)
+        kDesc.Font = Enum.Font.Gotham
+        kDesc.TextSize = 10
+        kDesc.TextWrapped = true
+        kDesc.TextXAlignment = Enum.TextXAlignment.Left
+
+        local kInput = Instance.new("TextBox", keyFrame)
+        kInput.Size = UDim2.new(0.92, 0, 0, 32)
+        kInput.Position = UDim2.new(0.04, 0, 0, 82)
+        kInput.BackgroundColor3 = Config.PanelColor
+        kInput.PlaceholderText = "Вставьте ключ (например: KRESTIK-XXXXXXXXXXX)"
+        kInput.PlaceholderColor3 = Color3.fromRGB(115, 120, 138)
+        kInput.Text = ""
+        kInput.TextColor3 = Color3.fromRGB(240, 244, 255)
+        kInput.Font = Enum.Font.Code
+        kInput.TextSize = 11
+        kInput.ClearTextOnFocus = false
+        Instance.new("UICorner", kInput).CornerRadius = UDim.new(0, 4)
+        local kInputStroke = Instance.new("UIStroke", kInput)
+        kInputStroke.Color = Config.BorderColor
+
+        local kStatus = Instance.new("TextLabel", keyFrame)
+        kStatus.Size = UDim2.new(0.92, 0, 0, 22)
+        kStatus.Position = UDim2.new(0.04, 0, 0, 120)
+        kStatus.BackgroundTransparency = 1
+        kStatus.Text = "Статус: Ожидание ввода ключа..."
+        kStatus.TextColor3 = Color3.fromRGB(150, 156, 175)
+        kStatus.Font = Enum.Font.GothamMedium
+        kStatus.TextSize = 10
+        kStatus.TextXAlignment = Enum.TextXAlignment.Left
+
+        local kCheckBtn = Instance.new("TextButton", keyFrame)
+        kCheckBtn.Size = UDim2.new(0.44, 0, 0, 32)
+        kCheckBtn.Position = UDim2.new(0.04, 0, 0, 152)
+        kCheckBtn.BackgroundColor3 = Config.ThemeColor
+        kCheckBtn.Text = "✔ Проверить ключ"
+        kCheckBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        kCheckBtn.Font = Enum.Font.GothamBold
+        kCheckBtn.TextSize = 10
+        Instance.new("UICorner", kCheckBtn).CornerRadius = UDim.new(0, 4)
+
+        local kGetBtn = Instance.new("TextButton", keyFrame)
+        kGetBtn.Size = UDim2.new(0.44, 0, 0, 32)
+        kGetBtn.Position = UDim2.new(0.52, 0, 0, 152)
+        kGetBtn.BackgroundColor3 = Config.PanelColor
+        kGetBtn.Text = "🔗 Получить ключ"
+        kGetBtn.TextColor3 = Color3.fromRGB(220, 225, 235)
+        kGetBtn.Font = Enum.Font.GothamBold
+        kGetBtn.TextSize = 10
+        Instance.new("UICorner", kGetBtn).CornerRadius = UDim.new(0, 4)
+        Instance.new("UIStroke", kGetBtn).Color = Config.BorderColor
+
+        kGetBtn.MouseButton1Click:Connect(function()
+            playClickSound()
+            pcall(function()
+                if setclipboard then
+                    setclipboard(KeySystemConfig.GetKeyLink)
+                end
+            end)
+            kStatus.Text = "Ссылка скопирована! Вставьте её в браузер."
+            kStatus.TextColor3 = Color3.fromRGB(56, 189, 248)
+        end)
+
+        local isCheckingKey = false
+        local function submitKeyCheck()
+            if isCheckingKey then return end
+            isCheckingKey = true
+            kStatus.Text = "Проверка ключа..."
+            kStatus.TextColor3 = Color3.fromRGB(251, 191, 36)
+
+            task.spawn(function()
+                local ok, msg = verifyKeyAccess(kInput.Text, nil)
+                if ok then
+                    kStatus.Text = msg
+                    kStatus.TextColor3 = Color3.fromRGB(74, 222, 128)
+                    task.wait(0.6)
+                    if keyFrame and keyFrame.Parent then
+                        keyFrame:Destroy()
+                    end
+                    unlockMainHubUI()
+                else
+                    kStatus.Text = "✖ " .. tostring(msg)
+                    kStatus.TextColor3 = Color3.fromRGB(248, 113, 113)
+                    kInputStroke.Color = Color3.fromRGB(248, 113, 113)
+                    task.wait(0.8)
+                    if kInputStroke and kInputStroke.Parent then
+                        kInputStroke.Color = Config.BorderColor
+                    end
+                end
+                isCheckingKey = false
+            end)
+        end
+
+        kCheckBtn.MouseButton1Click:Connect(function()
+            playClickSound()
+            submitKeyCheck()
+        end)
+
+        kInput.FocusLost:Connect(function(enterPressed)
+            if enterPressed then
+                submitKeyCheck()
+            end
+        end)
+    end
+end
 
 table.insert(connections, LocalPlayer.Idled:Connect(function()
     if Config.AntiAFK and running then
